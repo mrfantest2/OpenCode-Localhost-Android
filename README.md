@@ -1,46 +1,40 @@
 # OpenCode Localhost Android
 
-Native Android launcher/controller for running a real OpenCode server locally on the phone.
+A self-contained Android launcher for a real OpenCode v2 server.
 
-## What it does
+## v0.2.0 architecture
 
-- Starts OpenCode on `127.0.0.1:4096`
-- Stops the local server
-- Checks `/global/health` every 5 seconds
-- Installs/repairs the Android Termux OpenCode runtime
-- Copies the localhost URL for OpenCode Mobile
-- Uses Termux's official `RUN_COMMAND` integration instead of a fake API proxy
+**Termux is not required.** The APK embeds an ARM64 Android-native OpenCode runtime and launches it directly from the application's native library directory.
 
-## One-time Termux requirement
+- Local server: `http://127.0.0.1:4096`
+- OpenCode runtime: v2.0.22
+- Runtime ABI: Android ARM64 / API 28+
+- Authentication: HTTP Basic auth
+- Username: `opencode`
+- Password: generated and stored locally by the APK
+- Background operation: Android foreground service
+- Optional shared-storage access: Android "All files access" setting
 
-Use a current Termux build from F-Droid/GitHub. In Termux:
+The UI never prints HTTP response bodies. It probes the authenticated `/api/info` endpoint and shows only status, version, PID, connection credentials, and the last lifecycle event.
 
-```sh
-mkdir -p ~/.termux
-printf '\nallow-external-apps=true\n' >> ~/.termux/termux.properties
-termux-reload-settings
-```
+## Runtime packaging
 
-Then grant **OpenCode Localhost** the **Run commands in Termux environment** additional permission in Android app settings.
+CI downloads the verified Android-native package:
 
-## Runtime
+`Hope2333/opencode-termux -> opencode_2.0.22_aarch64.deb`
 
-The app prefers `opencode`, then `opencode2`. If neither exists it installs Node.js if needed and installs `opencode-termux` through npm.
+The SHA-256 is pinned in the workflow. Only the native OpenCode executable and its required `libopencode-crhandler.so` are embedded.
 
-Server URL:
+## Storage
 
-```
-http://127.0.0.1:4096
-```
+Without special storage access, the OpenCode workspace is the app's external-files directory.
 
-## Security
+After granting **All files access**, the workspace becomes shared phone storage at `/storage/emulated/0`.
 
-The default listener is loopback-only. It is not exposed to Wi-Fi, Tailscale, or the public internet.
+Android still prevents an ordinary unrooted app from accessing other apps' private data and protected system paths.
 
 ## Build
 
-```sh
-gradle :app:assembleDebug
-```
+Push to `main` or run the GitHub Actions workflow. The produced APK is ARM64-only.
 
 Package: `win.fantest.opencodelocalhost`

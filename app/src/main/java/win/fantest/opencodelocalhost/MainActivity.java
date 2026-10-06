@@ -8,18 +8,23 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
+import android.graphics.Typeface;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
-import android.text.method.ScrollingMovementMethod;
+import android.util.Base64;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
 import android.widget.LinearLayout;
-import android.widget.Space;
+import android.widget.ScrollView;
 import android.widget.TextView;
+
+import org.json.JSONObject;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -30,22 +35,21 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class MainActivity extends Activity {
-    private static final int REQ_TERMUX = 9401;
-    private static final String TERMUX_PERMISSION = "com.termux.permission.RUN_COMMAND";
-    private static final String LOCAL_URL = "http://127.0.0.1:4096";
-    private static final String HEALTH_URL = LOCAL_URL + "/global/health";
+    private static final String LOCAL_URL = "http://127.0.0.1:" + ServerService.PORT;
+    private static final String INFO_URL = LOCAL_URL + "/api/info";
 
     private TextView status;
-    private TextView details;
-    private TextView setup;
+    private TextView connection;
+    private TextView runtime;
+    private TextView lastEvent;
+
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService io = Executors.newSingleThreadExecutor();
-    private Runnable pendingAfterPermission;
 
-    private final Runnable healthLoop = new Runnable() {
+    private final Runnable refreshLoop = new Runnable() {
         @Override public void run() {
-            checkHealth(false);
-            handler.postDelayed(this, 5000);
+            checkServer();
+            handler.postDelayed(this, 3000);
         }
     };
 
@@ -53,20 +57,20 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(buildUi());
-        refreshPrereqs();
+        updateStaticInfo();
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        handler.removeCallbacks(healthLoop);
-        handler.post(healthLoop);
-        refreshPrereqs();
+        handler.removeCallbacks(refreshLoop);
+        handler.post(refreshLoop);
+        updateStaticInfo();
     }
 
     @Override
     protected void onPause() {
-        handler.removeCallbacks(healthLoop);
+        handler.removeCallbacks(refreshLoop);
         super.onPause();
     }
 
@@ -77,280 +81,264 @@ public class MainActivity extends Activity {
     }
 
     private View buildUi() {
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        scroll.setBackgroundColor(Color.rgb(8, 15, 30));
+
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(22), dp(24), dp(22), dp(24));
-        root.setBackgroundColor(Color.rgb(15, 23, 42));
+        root.setPadding(dp(22), dp(24), dp(22), dp(28));
+        scroll.addView(root);
 
-        TextView title = label("OpenCode Localhost", 27, Color.WHITE, true);
+        TextView title = text("OpenCode Localhost", 28, Color.WHITE, true);
         root.addView(title);
 
-        TextView subtitle = label("Runs a real OpenCode server on this Android device through Termux.", 15,
+        TextView subtitle = text("Embedded Android runtime • no Termux required", 14,
                 Color.rgb(148, 163, 184), false);
-        LinearLayout.LayoutParams subLp = fullWrap();
-        subLp.topMargin = dp(5);
-        root.addView(subtitle, subLp);
+        LinearLayout.LayoutParams slp = wrap();
+        slp.topMargin = dp(6);
+        root.addView(subtitle, slp);
 
-        status = label("CHECKING", 18, Color.rgb(250, 204, 21), true);
-        LinearLayout.LayoutParams statusLp = fullWrap();
-        statusLp.topMargin = dp(28);
-        root.addView(status, statusLp);
+        status = text("CHECKING…", 19, Color.rgb(250, 204, 21), true);
+        LinearLayout.LayoutParams stlp = wrap();
+        stlp.topMargin = dp(28);
+        root.addView(status, stlp);
 
-        details = label(LOCAL_URL, 15, Color.rgb(226, 232, 240), false);
-        details.setTextIsSelectable(true);
-        LinearLayout.LayoutParams detailLp = fullWrap();
-        detailLp.topMargin = dp(8);
-        root.addView(details, detailLp);
+        connection = text("", 15, Color.rgb(226, 232, 240), false);
+        connection.setTextIsSelectable(true);
+        LinearLayout.LayoutParams clp = wrap();
+        clp.topMargin = dp(14);
+        root.addView(connection, clp);
 
-        root.addView(space(18));
+        runtime = text("", 14, Color.rgb(148, 163, 184), false);
+        LinearLayout.LayoutParams rlp = wrap();
+        rlp.topMargin = dp(14);
+        root.addView(runtime, rlp);
+
+        lastEvent = text("", 13, Color.rgb(100, 116, 139), false);
+        LinearLayout.LayoutParams elp = wrap();
+        elp.topMargin = dp(10);
+        root.addView(lastEvent, elp);
+
+        root.addView(space(22));
 
         Button start = button("START SERVER");
-        start.setOnClickListener(v -> withTermuxPermission(this::startServer));
+        start.setOnClickListener(v -> startServer());
         root.addView(start, fullButton());
 
         Button stop = button("STOP SERVER");
-        stop.setOnClickListener(v -> withTermuxPermission(this::stopServer));
+        stop.setOnClickListener(v -> stopServer());
         root.addView(stop, spacedButton());
 
-        Button repair = button("INSTALL / REPAIR RUNTIME");
-        repair.setOnClickListener(v -> withTermuxPermission(this::repairRuntime));
-        root.addView(repair, spacedButton());
-
-        Button check = button("CHECK HEALTH");
-        check.setOnClickListener(v -> checkHealth(true));
-        root.addView(check, spacedButton());
-
-        Button copy = button("COPY LOCALHOST URL");
-        copy.setOnClickListener(v -> copyUrl());
+        Button copy = button("COPY CONNECTION DETAILS");
+        copy.setOnClickListener(v -> copyConnection());
         root.addView(copy, spacedButton());
 
-        Button termux = button("OPEN TERMUX");
-        termux.setOnClickListener(v -> openTermux());
-        root.addView(termux, spacedButton());
+        Button web = button("OPEN OPENCODE WEB UI");
+        web.setOnClickListener(v -> openWeb());
+        root.addView(web, spacedButton());
 
-        setup = label("", 13, Color.rgb(148, 163, 184), false);
-        setup.setMovementMethod(new ScrollingMovementMethod());
-        LinearLayout.LayoutParams setupLp = fullWrap();
-        setupLp.topMargin = dp(20);
-        root.addView(setup, setupLp);
+        Button files = button("GRANT PHONE FILE ACCESS");
+        files.setOnClickListener(v -> requestAllFilesAccess());
+        root.addView(files, spacedButton());
 
-        return root;
+        Button settings = button("APP SETTINGS");
+        settings.setOnClickListener(v -> openAppSettings());
+        root.addView(settings, spacedButton());
+
+        TextView note = text(
+                "The server listens only on this phone at 127.0.0.1:4096. " +
+                "OpenCode v2 uses Basic authentication; use the username and password shown above.",
+                13, Color.rgb(100, 116, 139), false);
+        LinearLayout.LayoutParams nlp = wrap();
+        nlp.topMargin = dp(22);
+        root.addView(note, nlp);
+
+        return scroll;
     }
 
     private void startServer() {
-        String script =
-                "export PREFIX=/data/data/com.termux/files/usr; " +
-                "export HOME=/data/data/com.termux/files/home; " +
-                "export PATH=\"$PREFIX/bin:$PATH\"; " +
-                "mkdir -p \"$HOME/.opencode-localhost\"; " +
-                "if ! command -v opencode >/dev/null 2>&1 && ! command -v opencode2 >/dev/null 2>&1; then " +
-                "  if ! command -v npm >/dev/null 2>&1; then pkg update -y && pkg install -y nodejs; fi; " +
-                "  npm install -g opencode-termux; " +
-                "fi; " +
-                "OC=opencode; command -v opencode >/dev/null 2>&1 || OC=opencode2; " +
-                "PIDFILE=\"$HOME/.opencode-localhost/server.pid\"; " +
-                "LOG=\"$HOME/.opencode-localhost/server.log\"; " +
-                "if [ -f \"$PIDFILE\" ] && kill -0 $(cat \"$PIDFILE\") 2>/dev/null; then exit 0; fi; " +
-                "command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock || true; " +
-                "nohup $OC serve --hostname 127.0.0.1 --port 4096 >\"$LOG\" 2>&1 < /dev/null & " +
-                "echo $! > \"$PIDFILE\";";
-        runTermux(script, "Start OpenCode Localhost");
+        if (Build.VERSION.SDK_INT >= 33 &&
+                checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1001);
+        }
+
+        Intent i = new Intent(this, ServerService.class).setAction(ServerService.ACTION_START);
+        if (Build.VERSION.SDK_INT >= 26) startForegroundService(i);
+        else startService(i);
+
         status.setText("STARTING…");
         status.setTextColor(Color.rgb(250, 204, 21));
-        handler.postDelayed(() -> checkHealth(true), 3500);
+        handler.postDelayed(this::checkServer, 1800);
     }
 
     private void stopServer() {
-        String script =
-                "export HOME=/data/data/com.termux/files/home; " +
-                "PIDFILE=\"$HOME/.opencode-localhost/server.pid\"; " +
-                "if [ -f \"$PIDFILE\" ]; then kill $(cat \"$PIDFILE\") 2>/dev/null || true; rm -f \"$PIDFILE\"; fi; " +
-                "pkill -f 'opencode.*serve.*4096' 2>/dev/null || true; " +
-                "command -v termux-wake-unlock >/dev/null 2>&1 && termux-wake-unlock || true;";
-        runTermux(script, "Stop OpenCode Localhost");
+        Intent i = new Intent(this, ServerService.class).setAction(ServerService.ACTION_STOP);
+        startService(i);
         status.setText("STOPPING…");
         status.setTextColor(Color.rgb(250, 204, 21));
-        handler.postDelayed(() -> checkHealth(true), 1800);
+        handler.postDelayed(this::checkServer, 1200);
     }
 
-    private void repairRuntime() {
-        String script =
-                "export PREFIX=/data/data/com.termux/files/usr; " +
-                "export HOME=/data/data/com.termux/files/home; " +
-                "export PATH=\"$PREFIX/bin:$PATH\"; " +
-                "pkg update -y; pkg install -y nodejs curl coreutils; " +
-                "npm install -g opencode-termux; " +
-                "opencode --version || true;";
-        runTermux(script, "Install / Repair OpenCode Runtime");
-        status.setText("RUNTIME INSTALL STARTED");
-        status.setTextColor(Color.rgb(56, 189, 248));
-    }
-
-    private void runTermux(String script, String label) {
-        if (!isTermuxInstalled()) {
-            showSetup("Termux is not installed. Install the current F-Droid/GitHub Termux build first.");
-            openUrl("https://github.com/termux/termux-app/releases/latest");
-            return;
-        }
-
-        try {
-            Intent intent = new Intent();
-            intent.setClassName("com.termux", "com.termux.app.RunCommandService");
-            intent.setAction("com.termux.RUN_COMMAND");
-            intent.putExtra("com.termux.RUN_COMMAND_PATH", "/data/data/com.termux/files/usr/bin/bash");
-            intent.putExtra("com.termux.RUN_COMMAND_ARGUMENTS", new String[]{"-lc", script});
-            intent.putExtra("com.termux.RUN_COMMAND_WORKDIR", "/data/data/com.termux/files/home");
-            intent.putExtra("com.termux.RUN_COMMAND_BACKGROUND", true);
-            intent.putExtra("com.termux.RUN_COMMAND_COMMAND_LABEL", label);
-            startService(intent);
-            showSetup("Command sent to Termux. If nothing happens, enable allow-external-apps=true in ~/.termux/termux.properties and grant this app the Termux RUN_COMMAND permission.");
-        } catch (Exception e) {
-            showSetup("Could not launch Termux command: " + e.getMessage());
-        }
-    }
-
-    private void withTermuxPermission(Runnable action) {
-        if (!isTermuxInstalled()) {
-            showSetup("Termux is required. Tap OPEN TERMUX after installing it.");
-            openUrl("https://github.com/termux/termux-app/releases/latest");
-            return;
-        }
-        if (checkSelfPermission(TERMUX_PERMISSION) == PackageManager.PERMISSION_GRANTED) {
-            action.run();
-            return;
-        }
-        pendingAfterPermission = action;
-        requestPermissions(new String[]{TERMUX_PERMISSION}, REQ_TERMUX);
-    }
-
-    @Override
-    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == REQ_TERMUX) {
-            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                Runnable r = pendingAfterPermission;
-                pendingAfterPermission = null;
-                if (r != null) r.run();
-            } else {
-                showSetup("Grant 'Run commands in Termux environment' under this app's Additional permissions.");
-                openAppDetails();
-            }
-        }
-    }
-
-    private void checkHealth(boolean userInitiated) {
+    private void checkServer() {
         io.execute(() -> {
-            String body = null;
+            boolean ok = false;
+            String version = null;
+            String pid = null;
             try {
-                HttpURLConnection c = (HttpURLConnection) new URL(HEALTH_URL).openConnection();
+                HttpURLConnection c = (HttpURLConnection) new URL(INFO_URL).openConnection();
                 c.setConnectTimeout(1200);
                 c.setReadTimeout(1200);
                 c.setRequestMethod("GET");
+
+                String password = ServerService.getOrCreatePassword(this);
+                String token = Base64.encodeToString(
+                        (ServerService.USERNAME + ":" + password).getBytes(StandardCharsets.UTF_8),
+                        Base64.NO_WRAP
+                );
+                c.setRequestProperty("Authorization", "Basic " + token);
+
                 int code = c.getResponseCode();
-                if (code >= 200 && code < 300) {
-                    BufferedReader br = new BufferedReader(new InputStreamReader(c.getInputStream(), StandardCharsets.UTF_8));
+                if (code == 200) {
+                    BufferedReader br = new BufferedReader(
+                            new InputStreamReader(c.getInputStream(), StandardCharsets.UTF_8));
                     StringBuilder sb = new StringBuilder();
                     String line;
-                    while ((line = br.readLine()) != null) sb.append(line);
-                    body = sb.toString();
+                    while ((line = br.readLine()) != null && sb.length() < 8192) sb.append(line);
+                    JSONObject obj = new JSONObject(sb.toString());
+                    version = obj.optString("version", "unknown");
+                    pid = String.valueOf(obj.optLong("pid", -1));
+                    ok = true;
                 }
                 c.disconnect();
-            } catch (Exception ignored) {}
+            } catch (Throwable ignored) {}
 
-            final String result = body;
+            final boolean online = ok;
+            final String v = version;
+            final String p = pid;
             runOnUiThread(() -> {
-                if (result != null && !result.isEmpty()) {
+                if (online) {
                     status.setText("SERVER ONLINE");
                     status.setTextColor(Color.rgb(34, 197, 94));
-                    details.setText(LOCAL_URL + "\n" + result);
+                    runtime.setText("Runtime: Embedded Android ARM64\nOpenCode: " + v +
+                            "\nPID: " + p + "\nPhone files: " + fileAccessState());
                 } else {
                     status.setText("SERVER OFFLINE");
                     status.setTextColor(Color.rgb(248, 113, 113));
-                    details.setText(LOCAL_URL + "\nStart the server, then connect OpenCode Mobile to this address.");
-                    if (userInitiated) refreshPrereqs();
+                    runtime.setText("Runtime: Embedded Android ARM64\nOpenCode: bundled v2.0.22" +
+                            "\nPhone files: " + fileAccessState());
                 }
+                updateStaticInfo();
             });
         });
     }
 
-    private void refreshPrereqs() {
-        boolean termux = isTermuxInstalled();
-        boolean perm = checkSelfPermission(TERMUX_PERMISSION) == PackageManager.PERMISSION_GRANTED;
-        String text = "Termux: " + (termux ? "installed" : "missing") +
-                "\nRUN_COMMAND permission: " + (perm ? "granted" : "not granted") +
-                "\n\nRequired once in Termux: ~/.termux/termux.properties must contain:\nallow-external-apps=true";
-        setup.setText(text);
-    }
+    private void updateStaticInfo() {
+        String password = ServerService.getOrCreatePassword(this);
+        connection.setText(
+                "Address\n" + LOCAL_URL +
+                "\n\nUsername\n" + ServerService.USERNAME +
+                "\n\nPassword\n" + password
+        );
 
-    private boolean isTermuxInstalled() {
-        try {
-            getPackageManager().getPackageInfo("com.termux", 0);
-            return true;
-        } catch (Exception e) {
-            return false;
+        String log = getSharedPreferences(ServerService.PREFS, MODE_PRIVATE)
+                .getString(ServerService.KEY_LAST_LOG, "");
+        if (log == null || log.isEmpty()) {
+            lastEvent.setText("Ready.");
+        } else {
+            if (log.length() > 180) log = log.substring(0, 180) + "…";
+            lastEvent.setText("Last event: " + log);
         }
     }
 
-    private void openTermux() {
-        Intent launch = getPackageManager().getLaunchIntentForPackage("com.termux");
-        if (launch != null) startActivity(launch);
-        else openUrl("https://github.com/termux/termux-app/releases/latest");
+    private String fileAccessState() {
+        if (Build.VERSION.SDK_INT >= 30) {
+            return Environment.isExternalStorageManager() ? "all shared storage enabled" : "app storage only";
+        }
+        return "shared storage available";
     }
 
-    private void copyUrl() {
+    private void copyConnection() {
+        String password = ServerService.getOrCreatePassword(this);
+        String value =
+                "URL: " + LOCAL_URL + "\n" +
+                "Username: " + ServerService.USERNAME + "\n" +
+                "Password: " + password;
         ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-        cm.setPrimaryClip(ClipData.newPlainText("OpenCode localhost", LOCAL_URL));
-        showSetup("Copied " + LOCAL_URL);
+        cm.setPrimaryClip(ClipData.newPlainText("OpenCode connection", value));
+        lastEvent.setText("Connection details copied.");
     }
 
-    private void openAppDetails() {
+    private void openWeb() {
         try {
-            Intent i = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                    Uri.parse("package:" + getPackageName()));
-            startActivity(i);
-        } catch (Exception ignored) {}
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(LOCAL_URL)));
+        } catch (Throwable t) {
+            lastEvent.setText("Could not open browser: " + t.getMessage());
+        }
     }
 
-    private void openUrl(String url) {
+    private void requestAllFilesAccess() {
         try {
-            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
-        } catch (Exception ignored) {}
+            if (Build.VERSION.SDK_INT >= 30) {
+                Intent i = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                        Uri.parse("package:" + getPackageName()));
+                startActivity(i);
+            } else {
+                openAppSettings();
+            }
+        } catch (Throwable t) {
+            try {
+                startActivity(new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
+            } catch (Throwable ignored) {
+                openAppSettings();
+            }
+        }
     }
 
-    private void showSetup(String msg) {
-        setup.setText(msg);
+    private void openAppSettings() {
+        try {
+            startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:" + getPackageName())));
+        } catch (Throwable ignored) {}
     }
 
-    private TextView label(String text, int sp, int color, boolean bold) {
+    private TextView text(String value, int sp, int color, boolean bold) {
         TextView v = new TextView(this);
-        v.setText(text);
+        v.setText(value);
         v.setTextSize(sp);
         v.setTextColor(color);
-        if (bold) v.setTypeface(v.getTypeface(), android.graphics.Typeface.BOLD);
+        v.setLineSpacing(0f, 1.08f);
+        if (bold) v.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         return v;
     }
 
-    private Button button(String text) {
+    private Button button(String label) {
         Button b = new Button(this);
-        b.setText(text);
+        b.setText(label);
         b.setTextSize(14);
         b.setAllCaps(false);
         b.setGravity(Gravity.CENTER);
         return b;
     }
 
-    private Space space(int heightDp) {
-        Space s = new Space(this);
-        s.setLayoutParams(new LinearLayout.LayoutParams(1, dp(heightDp)));
-        return s;
+    private View space(int heightDp) {
+        View v = new View(this);
+        v.setLayoutParams(new LinearLayout.LayoutParams(1, dp(heightDp)));
+        return v;
     }
 
-    private LinearLayout.LayoutParams fullWrap() {
-        return new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+    private LinearLayout.LayoutParams wrap() {
+        return new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
     }
 
     private LinearLayout.LayoutParams fullButton() {
-        return new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(54));
+        return new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(54)
+        );
     }
 
     private LinearLayout.LayoutParams spacedButton() {
@@ -359,7 +347,7 @@ public class MainActivity extends Activity {
         return p;
     }
 
-    private int dp(int v) {
-        return (int) (v * getResources().getDisplayMetrics().density + 0.5f);
+    private int dp(int value) {
+        return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
     }
 }

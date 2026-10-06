@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -19,17 +19,40 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      - name: Fetch verified Android-native OpenCode runtime
+        shell: bash
+        run: |
+          set -euxo pipefail
+          URL="https://github.com/Hope2333/opencode-termux/releases/download/Push261005/opencode_2.0.22_aarch64.deb"
+          SHA="629b6819e40418b96a8dedfc15f8b6cac8f5e4b54682d9f4194c59b68aa95829"
+          curl -L --fail --retry 3 "$URL" -o /tmp/opencode.deb
+          echo "$SHA  /tmp/opencode.deb" | sha256sum -c -
+
+          rm -rf /tmp/opencode-payload
+          mkdir -p /tmp/opencode-payload
+          cd /tmp/opencode-payload
+          ar x /tmp/opencode.deb
+          mkdir root
+          tar -xJf data.tar.xz -C root
+
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p app/src/main/jniLibs/arm64-v8a
+          cp /tmp/opencode-payload/root/data/data/com.termux/files/usr/bin/opencode              app/src/main/jniLibs/arm64-v8a/libopencode_exec.so
+          cp /tmp/opencode-payload/root/data/data/com.termux/files/usr/lib/opencode/libopencode-crhandler.so              app/src/main/jniLibs/arm64-v8a/libopencode-crhandler.so
+          chmod 755 app/src/main/jniLibs/arm64-v8a/*.so
+          file app/src/main/jniLibs/arm64-v8a/*.so
+
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.10.2"
 
-      - name: Build debug APK
+      - name: Build APK
         run: gradle :app:assembleDebug --stacktrace
 
       - name: Rename APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk OpenCode-Localhost-v0.1.0.apk
+        run: cp app/build/outputs/apk/debug/app-debug.apk OpenCode-Localhost-TermuxFree-v0.2.0.apk
 
       - uses: actions/upload-artifact@v4
         with:
-          name: OpenCode-Localhost-v0.1.0
-          path: OpenCode-Localhost-v0.1.0.apk
+          name: OpenCode-Localhost-TermuxFree-v0.2.0
+          path: OpenCode-Localhost-TermuxFree-v0.2.0.apk
