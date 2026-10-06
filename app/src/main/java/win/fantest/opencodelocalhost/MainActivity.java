@@ -141,19 +141,19 @@ public class MainActivity extends Activity {
         String script =
                 "export PREFIX=/data/data/com.termux/files/usr; " +
                 "export HOME=/data/data/com.termux/files/home; " +
-                "export PATH=\\"$PREFIX/bin:$PATH\\"; " +
-                "mkdir -p \\"$HOME/.opencode-localhost\\"; " +
+                "export PATH=\"$PREFIX/bin:$PATH\"; " +
+                "mkdir -p \"$HOME/.opencode-localhost\"; " +
                 "if ! command -v opencode >/dev/null 2>&1 && ! command -v opencode2 >/dev/null 2>&1; then " +
                 "  if ! command -v npm >/dev/null 2>&1; then pkg update -y && pkg install -y nodejs; fi; " +
                 "  npm install -g opencode-termux; " +
                 "fi; " +
                 "OC=opencode; command -v opencode >/dev/null 2>&1 || OC=opencode2; " +
-                "PIDFILE=\\"$HOME/.opencode-localhost/server.pid\\"; " +
-                "LOG=\\"$HOME/.opencode-localhost/server.log\\"; " +
-                "if [ -f \\"$PIDFILE\\" ] && kill -0 $(cat \\"$PIDFILE\\") 2>/dev/null; then exit 0; fi; " +
+                "PIDFILE=\"$HOME/.opencode-localhost/server.pid\"; " +
+                "LOG=\"$HOME/.opencode-localhost/server.log\"; " +
+                "if [ -f \"$PIDFILE\" ] && kill -0 $(cat \"$PIDFILE\") 2>/dev/null; then exit 0; fi; " +
                 "command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock || true; " +
-                "nohup $OC serve --hostname 127.0.0.1 --port 4096 >\\"$LOG\\" 2>&1 < /dev/null & " +
-                "echo $! > \\"$PIDFILE\\";";
+                "nohup $OC serve --hostname 127.0.0.1 --port 4096 >\"$LOG\" 2>&1 < /dev/null & " +
+                "echo $! > \"$PIDFILE\";";
         runTermux(script, "Start OpenCode Localhost");
         status.setText("STARTING…");
         status.setTextColor(Color.rgb(250, 204, 21));
@@ -163,8 +163,8 @@ public class MainActivity extends Activity {
     private void stopServer() {
         String script =
                 "export HOME=/data/data/com.termux/files/home; " +
-                "PIDFILE=\\"$HOME/.opencode-localhost/server.pid\\"; " +
-                "if [ -f \\"$PIDFILE\\" ]; then kill $(cat \\"$PIDFILE\\") 2>/dev/null || true; rm -f \\"$PIDFILE\\"; fi; " +
+                "PIDFILE=\"$HOME/.opencode-localhost/server.pid\"; " +
+                "if [ -f \"$PIDFILE\" ]; then kill $(cat \"$PIDFILE\") 2>/dev/null || true; rm -f \"$PIDFILE\"; fi; " +
                 "pkill -f 'opencode.*serve.*4096' 2>/dev/null || true; " +
                 "command -v termux-wake-unlock >/dev/null 2>&1 && termux-wake-unlock || true;";
         runTermux(script, "Stop OpenCode Localhost");
@@ -177,7 +177,7 @@ public class MainActivity extends Activity {
         String script =
                 "export PREFIX=/data/data/com.termux/files/usr; " +
                 "export HOME=/data/data/com.termux/files/home; " +
-                "export PATH=\\"$PREFIX/bin:$PATH\\"; " +
+                "export PATH=\"$PREFIX/bin:$PATH\"; " +
                 "pkg update -y; pkg install -y nodejs curl coreutils; " +
                 "npm install -g opencode-termux; " +
                 "opencode --version || true;";
