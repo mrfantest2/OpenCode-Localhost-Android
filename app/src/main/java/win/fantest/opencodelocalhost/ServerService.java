@@ -10,8 +10,6 @@ import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.Environment;
 import android.os.IBinder;
-import android.system.Os;
-import android.system.OsConstants;
 import android.util.Base64;
 
 import java.io.BufferedReader;
@@ -27,7 +25,6 @@ public class ServerService extends Service {
     public static final String ACTION_STOP = "win.fantest.opencodelocalhost.STOP";
     public static final String PREFS = "opencode_server";
     public static final String KEY_PASSWORD = "password";
-    public static final String KEY_PID = "pid";
     public static final String KEY_LAST_LOG = "last_log";
     public static final String KEY_RUNNING = "running";
     public static final int PORT = 4096;
@@ -119,9 +116,8 @@ public class ServerService extends Service {
             env.put("OPENCODE_SERVER_USERNAME", USERNAME);
             env.put("OPENCODE_SERVER_PASSWORD", getOrCreatePassword(this));
 
+            killOrphanServer();
             process = pb.start();
-            long pid = process.pid();
-            prefs().edit().putLong(KEY_PID, pid).apply();
             updateRunning(true, "process started");
             updateNotification("OpenCode server running on 127.0.0.1:" + PORT);
 
@@ -139,14 +135,12 @@ public class ServerService extends Service {
 
             int exit = process.waitFor();
             process = null;
-            prefs().edit().remove(KEY_PID).apply();
             updateRunning(false, "server exited with code " + exit);
             if (!explicitStop) {
                 updateNotification("OpenCode server stopped");
             }
         } catch (Throwable t) {
             process = null;
-            prefs().edit().remove(KEY_PID).apply();
             updateRunning(false, "start failed: " + t.getMessage());
             updateNotification("OpenCode start failed");
         }
@@ -164,19 +158,21 @@ public class ServerService extends Service {
                 }
                 if (p.isAlive()) p.destroyForcibly();
             } else {
-                long pid = prefs().getLong(KEY_PID, -1);
-                if (pid > 0) {
-                    try {
-                        Os.kill((int) pid, OsConstants.SIGTERM);
-                    } catch (Throwable ignored) {}
-                }
+                killOrphanServer();
             }
         } finally {
             process = null;
-            prefs().edit().remove(KEY_PID).putBoolean(KEY_RUNNING, false)
+            prefs().edit().putBoolean(KEY_RUNNING, false)
                     .putString(KEY_LAST_LOG, "server stopped").apply();
             stopForeground(STOP_FOREGROUND_REMOVE);
         }
+    }
+
+    private void killOrphanServer() {
+        try {
+            Process killer = new ProcessBuilder("/system/bin/toybox", "pkill", "-f", "libopencode_exec.so").start();
+            killer.waitFor();
+        } catch (Throwable ignored) {}
     }
 
     private void updateRunning(boolean running, String log) {
